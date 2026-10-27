@@ -39,6 +39,7 @@
   </div>
 
   <div id="main" class="hide">
+    <div id="link" class="muted" style="margin-bottom:8px"></div>
     <div id="status">Camera shuru ho raha hai...</div>
     <div id="reader"></div>
     <div class="card" style="margin-top:12px">
@@ -108,6 +109,30 @@
   }
   function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
 
+  var HELP_MSG = '✖ POS tak pohanch nahi saka. Apps Script mein Deploy → New version karein, "Execute as: Me" aur "Who has access: Anyone" rakhein, aur POS ka URL dobara copy karein.';
+  var jcount = 0;
+  /* JSONP: script tag se call (CORS ka masla nahi hota) */
+  function api(params) {
+    return new Promise(function (resolve, reject) {
+      var name = '__posCb' + (++jcount) + '_' + Date.now(), s = document.createElement('script'), done = false;
+      function fin() { done = true; clearTimeout(t); try { delete window[name]; } catch (e) { window[name] = undefined; } s.remove(); }
+      var t = setTimeout(function () { if (!done) { fin(); reject(new Error('timeout')); } }, 12000);
+      window[name] = function (d) { if (!done) { fin(); resolve(d); } };
+      s.onerror = function () { if (!done) { fin(); reject(new Error('load')); } };
+      var q = ['callback=' + name, '_=' + Date.now()];
+      Object.keys(params).forEach(function (k) { q.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k])); });
+      s.src = base + '?' + q.join('&');
+      document.head.appendChild(s);
+    });
+  }
+  function checkLink() {
+    $('link').textContent = '⏳ POS se rabta check ho raha hai...'; $('link').className = 'muted';
+    api({ action: 'ping' }).then(function (d) {
+      if (d && d.ok) { $('link').textContent = '🟢 POS se juda hua hai'; $('link').style.color = '#86efac'; }
+      else throw 0;
+    }).catch(function () { $('link').textContent = '🔴 POS se juda nahi. ' + HELP_MSG.slice(2); $('link').style.color = '#fca5a5'; });
+  }
+
   function send(code, live) {
     code = String(code || '').trim();
     if (!code) return;
@@ -118,34 +143,22 @@
       if (same && gap < 1500) return;
     }
     status('Bhej raha hoon: ' + code + '...');
-    fetch(base + (base.indexOf('?') > -1 ? '&' : '?') + 'action=scan&code=' + encodeURIComponent(code) + '&_=' + now, { cache: 'no-store' })
-      .then(function (r) { return r.text(); })
-      .then(function (t) {
-        var d;
-        try { d = JSON.parse(t); } catch (e) { throw { kind: 'notjson' }; }
-        return d;
-      })
-      .then(function (d) {
-        if (d && d.ok) {
-          feedback(true);
-          var c = counts[d.id] || (counts[d.id] = { name: d.name, n: 0, ok: true });
-          if (!c.n) order.unshift(d.id);
-          c.n++; total++;
-          status('✓ ' + d.name + ' (Rs. ' + d.price + ') POS mein add', 'ok');
-        } else {
-          feedback(false);
-          status('✖ ' + (d && d.error === 'not_found' ? 'Barcode nahi mila: ' + code : 'Error: ' + (d && d.error)), 'err');
-        }
-        renderLog();
-      })
-      .catch(function (e) {
+    api({ action: 'scan', code: code }).then(function (d) {
+      if (d && d.ok) {
+        feedback(true);
+        var c = counts[d.id] || (counts[d.id] = { name: d.name, n: 0, ok: true });
+        if (!c.n) order.unshift(d.id);
+        c.n++; total++;
+        status('✓ ' + d.name + ' (Rs. ' + d.price + ') POS mein add', 'ok');
+      } else {
         feedback(false);
-        if (e && e.kind === 'notjson') {
-          status('✖ POS ne scanner ka jawab nahi diya. Apps Script mein Code.gs naya paste karke Deploy → Manage deployments → Edit → New version karein.', 'err');
-        } else {
-          status('✖ POS tak pohanch nahi saka. Deploy karte waqt "Who has access" = Anyone rakhein, aur URL sahi paste karein.', 'err');
-        }
-      });
+        status('✖ ' + (d && d.error === 'not_found' ? 'Barcode nahi mila: ' + code : 'POS error: ' + (d && d.error)), 'err');
+      }
+      renderLog();
+    }).catch(function () {
+      feedback(false);
+      status(HELP_MSG, 'err');
+    });
   }
 
   function stop() {
@@ -184,6 +197,7 @@
     }
     base = url.split('?')[0];
     store('posUrl', base);
+    checkLink();
     try { if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
     start();
   }
